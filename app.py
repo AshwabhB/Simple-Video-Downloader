@@ -8,6 +8,11 @@ from datetime import datetime
 DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Downloads")
 LOG_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloaded_videos.txt")
 
+
+class DownloadCancelled(Exception):
+    """Raised from the progress hook when the user cancels a download."""
+    pass
+
 # --- Theme ---
 C = {
     "BG":           "#121212",
@@ -165,6 +170,7 @@ class App:
         self.url_rows        = []
         self.quality_radios  = []
         self.fetched_qualities = []
+        self.cancel_requested = False
 
         # Card
         self.card = tk.Frame(self.root, bg=C["CARD"], highlightbackground=C["BORDER"],
@@ -172,8 +178,19 @@ class App:
         self.card.pack(fill="both", expand=True, padx=20, pady=20)
 
         # Title
-        tk.Label(self.card, text="Video Downloader", font=FONT_TITLE,
-                 bg=C["CARD"], fg=C["TEXT"]).pack(anchor="w")
+        title_header = tk.Frame(self.card, bg=C["CARD"])
+        title_header.pack(fill="x")
+        tk.Label(title_header, text="Video Downloader", font=FONT_TITLE,
+                 bg=C["CARD"], fg=C["TEXT"]).pack(side="left", anchor="w")
+
+        self.open_folder_btn = tk.Label(title_header, text="  📂 Open Folder  ",
+                                        font=("Segoe UI", 9, "bold"), bg=C["CARD"],
+                                        fg=C["ACCENT_LIGHT"], cursor="hand2")
+        self.open_folder_btn.pack(side="right", anchor="e")
+        self.open_folder_btn.bind("<Enter>",          lambda e: self.open_folder_btn.config(fg=C["ACCENT"]))
+        self.open_folder_btn.bind("<Leave>",          lambda e: self.open_folder_btn.config(fg=C["ACCENT_LIGHT"]))
+        self.open_folder_btn.bind("<ButtonRelease-1>", lambda e: self.open_download_folder())
+
         tk.Label(self.card, text="Paste links and download in your chosen quality",
                  font=FONT_SM, bg=C["CARD"], fg=C["TEXT_DIM"]).pack(anchor="w", pady=(0, 14))
 
@@ -222,11 +239,16 @@ class App:
         self.fetch_btn.pack(side="left", padx=(0, 10))
 
         self.download_btn = StyledButton(btn_frame, "Download", command=self.download_all,
-                                         accent=True, width=140, height=40)
+                                         accent=True, width=130, height=40)
         self.download_btn.pack(side="left", padx=(0, 10))
 
+        self.cancel_btn = StyledButton(btn_frame, "Cancel", command=self.cancel_download,
+                                       accent=False, width=100, height=40)
+        self.cancel_btn.set_state("disabled")
+        self.cancel_btn.pack(side="left", padx=(0, 10))
+
         self.done_btn = StyledButton(btn_frame, "Done", command=self.reset_gui,
-                                     accent=False, width=100, height=40)
+                                     accent=False, width=90, height=40)
         self.done_btn.set_state("disabled")
         self.done_btn.pack(side="left")
 
@@ -237,6 +259,10 @@ class App:
 
         self.progress_bar = StyledProgress(self.card, width=460, height=6)
         self.progress_bar.pack(pady=(6, 0))
+
+        self.details_label = tk.Label(self.card, text="", font=FONT_SM,
+                                      bg=C["CARD"], fg=C["TEXT_DIM"])
+        self.details_label.pack(pady=(6, 0))
 
         self.status_label = tk.Label(self.card, text="", font=FONT_SM,
                                      bg=C["CARD"], fg=C["TEXT_SEC"])
@@ -366,11 +392,14 @@ class App:
             messagebox.showwarning("No URLs", "Please paste at least one link.")
             return
 
+        self.cancel_requested = False
         self.download_btn.set_state("disabled")
         self.fetch_btn.set_state("disabled")
         self.done_btn.set_state("disabled")
+        self.cancel_btn.set_state("normal")
         self.progress_bar.set(0)
         self.quality_label.config(text="")
+        self.details_label.config(text="")
 
         def run():
             total      = len(urls)
@@ -391,6 +420,8 @@ class App:
 
                 try:
                     def progress_hook(d, _idx=idx, _row=row):
+                        if self.cancel_requested:
+                            raise DownloadCancelled()
                         if d["status"] == "downloading":
                             t  = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
                             dl = d.get("downloaded_bytes", 0)
@@ -398,8 +429,10 @@ class App:
                                 base    = _idx / total * 100
                                 current = (dl / t) * (100 / total)
                                 self.progress_bar.set(base + current)
+                            self._update_details(d, t, dl)
                         elif d["status"] == "finished":
                             _row.status_label.config(text="Merging...", fg=C["TEXT_SEC"])
+                            self.details_label.config(text="Merging audio and video...")
 
                     ydl_opts = {
                         "format": fmt,
@@ -439,20 +472,75 @@ class App:
                     log_download(title, url, quality_str)
                     row.status_label.config(text="✓", fg=C["GREEN"])
 
+                except DownloadCancelled:
+                    row.status_label.config(text="✕", fg=C["RED"])
+                    break
+
                 except Exception as e:
                     row.status_label.config(text="✗", fg=C["RED"])
                     messagebox.showerror("Error", f"Failed: {url}\n\n{e}")
 
-            self.progress_bar.set(100)
-            self.status_label.config(
-                text=f"All done! ({total} video{'s' if total > 1 else ''})",
-                fg=C["GREEN"])
-            self.quality_label.config(text="")
+            self.cancel_btn.set_state("disabled")
+            if self.cancel_requested:
+                self.status_label.config(text="Download cancelled.", fg=C["RED"])
+                self.quality_label.config(text="")
+                self.details_label.config(text="")
+            else:
+                self.progress_bar.set(100)
+                self.status_label.config(
+                    text=f"All done! ({total} video{'s' if total > 1 else ''})",
+                    fg=C["GREEN"])
+                self.quality_label.config(text="")
+                self.details_label.config(text="")
             self.done_btn.set_state("normal")
             self.download_btn.set_state("normal")
             self.fetch_btn.set_state("normal")
 
         threading.Thread(target=run, daemon=True).start()
+
+    # ------------------------------------------------------------------ #
+    #  Download details / cancel / open folder
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _fmt_size(num_bytes):
+        if not num_bytes:
+            return "?"
+        for unit in ("B", "KB", "MB", "GB"):
+            if num_bytes < 1024:
+                return f"{num_bytes:.1f} {unit}"
+            num_bytes /= 1024
+        return f"{num_bytes:.1f} TB"
+
+    @staticmethod
+    def _fmt_time(seconds):
+        if seconds is None:
+            return "?"
+        seconds = int(seconds)
+        m, s = divmod(seconds, 60)
+        h, m = divmod(m, 60)
+        if h:
+            return f"{h}h {m}m {s}s"
+        if m:
+            return f"{m}m {s}s"
+        return f"{s}s"
+
+    def _update_details(self, d, total, downloaded):
+        speed = d.get("speed")
+        eta   = d.get("eta")
+        speed_str = f"{self._fmt_size(speed)}/s" if speed else "--"
+        size_str  = f"{self._fmt_size(downloaded)} / {self._fmt_size(total)}"
+        eta_str   = self._fmt_time(eta)
+        self.details_label.config(
+            text=f"Speed: {speed_str}    Size: {size_str}    Time left: {eta_str}")
+
+    def cancel_download(self):
+        self.cancel_requested = True
+        self.cancel_btn.set_state("disabled")
+        self.status_label.config(text="Cancelling...", fg=C["RED"])
+
+    def open_download_folder(self):
+        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+        os.startfile(DOWNLOAD_DIR)
 
     # ------------------------------------------------------------------ #
     #  Reset
@@ -469,7 +557,10 @@ class App:
         self.quality_hint.config(text="")
         self.quality_label.config(text="")
         self.progress_bar.set(0)
+        self.details_label.config(text="")
         self.status_label.config(text="", fg=C["TEXT_SEC"])
+        self.cancel_requested = False
+        self.cancel_btn.set_state("disabled")
         self.done_btn.set_state("disabled")
 
 
