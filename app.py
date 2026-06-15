@@ -1,12 +1,29 @@
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 import threading
 import yt_dlp
 import os
+import json
 from datetime import datetime
 
-DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Downloads")
+DEFAULT_DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Downloads")
 LOG_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloaded_videos.txt")
+SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+
+
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def save_settings(settings):
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
 
 
 class DownloadCancelled(Exception):
@@ -172,6 +189,9 @@ class App:
         self.fetched_qualities = []
         self.cancel_requested = False
 
+        settings = load_settings()
+        self.download_dir = settings.get("download_dir") or DEFAULT_DOWNLOAD_DIR
+
         # Card
         self.card = tk.Frame(self.root, bg=C["CARD"], highlightbackground=C["BORDER"],
                              highlightthickness=1, padx=28, pady=20)
@@ -191,8 +211,21 @@ class App:
         self.open_folder_btn.bind("<Leave>",          lambda e: self.open_folder_btn.config(fg=C["ACCENT_LIGHT"]))
         self.open_folder_btn.bind("<ButtonRelease-1>", lambda e: self.open_download_folder())
 
+        self.change_folder_btn = tk.Label(title_header, text="  ✏ Change  ",
+                                          font=("Segoe UI", 9, "bold"), bg=C["CARD"],
+                                          fg=C["ACCENT_LIGHT"], cursor="hand2")
+        self.change_folder_btn.pack(side="right", anchor="e")
+        self.change_folder_btn.bind("<Enter>",          lambda e: self.change_folder_btn.config(fg=C["ACCENT"]))
+        self.change_folder_btn.bind("<Leave>",          lambda e: self.change_folder_btn.config(fg=C["ACCENT_LIGHT"]))
+        self.change_folder_btn.bind("<ButtonRelease-1>", lambda e: self.change_download_folder())
+
         tk.Label(self.card, text="Paste links and download in your chosen quality",
-                 font=FONT_SM, bg=C["CARD"], fg=C["TEXT_DIM"]).pack(anchor="w", pady=(0, 14))
+                 font=FONT_SM, bg=C["CARD"], fg=C["TEXT_DIM"]).pack(anchor="w", pady=(0, 2))
+
+        self.folder_label = tk.Label(self.card, text=f"Save to: {self.download_dir}",
+                                     font=("Segoe UI", 8), bg=C["CARD"], fg=C["TEXT_DIM"],
+                                     anchor="w")
+        self.folder_label.pack(anchor="w", pady=(0, 14), fill="x")
 
         # --- URL section ---
         url_header = tk.Frame(self.card, bg=C["CARD"])
@@ -441,7 +474,7 @@ class App:
                             "key": "FFmpegVideoConvertor",
                             "preferedformat": "mp4",
                         }],
-                        "outtmpl": os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s"),
+                        "outtmpl": os.path.join(self.download_dir, "%(title)s.%(ext)s"),
                         "progress_hooks": [progress_hook],
                         "quiet": True,
                         "no_warnings": True,
@@ -539,8 +572,15 @@ class App:
         self.status_label.config(text="Cancelling...", fg=C["RED"])
 
     def open_download_folder(self):
-        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-        os.startfile(DOWNLOAD_DIR)
+        os.makedirs(self.download_dir, exist_ok=True)
+        os.startfile(self.download_dir)
+
+    def change_download_folder(self):
+        new_dir = filedialog.askdirectory(initialdir=self.download_dir, title="Select download folder")
+        if new_dir:
+            self.download_dir = new_dir
+            self.folder_label.config(text=f"Save to: {self.download_dir}")
+            save_settings({"download_dir": self.download_dir})
 
     # ------------------------------------------------------------------ #
     #  Reset
