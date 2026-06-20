@@ -254,6 +254,18 @@ class App:
                                      bg=C["CARD"], fg=C["TEXT_DIM"])
         self.quality_hint.pack(side="right")
 
+        self.audio_only_var = tk.BooleanVar(value=False)
+        self.audio_only_cb = tk.Checkbutton(
+            quality_header, text="Audio only (MP3)",
+            variable=self.audio_only_var,
+            command=self._on_audio_toggle,
+            font=("Segoe UI", 9), bg=C["CARD"], fg=C["TEXT_SEC"],
+            selectcolor=C["INPUT_BG"], activebackground=C["CARD"],
+            activeforeground=C["TEXT"], highlightthickness=0,
+            borderwidth=0,
+        )
+        self.audio_only_cb.pack(side="left", padx=(18, 0))
+
         self.quality_var   = tk.StringVar(value="Highest available")
         self.quality_frame = tk.Frame(self.card, bg=C["CARD"])
         self.quality_frame.pack(fill="x", pady=(6, 0))
@@ -328,7 +340,18 @@ class App:
             self.quality_radios.append(rb)
         self._fit_window()
 
+    def _on_audio_toggle(self):
+        self._update_quality_section()
+
     def _update_quality_section(self):
+        if self.audio_only_var.get():
+            self.quality_var.set("Highest available")
+            self._build_quality_radios(["Highest available"], enabled=False)
+            self.quality_hint.config(text="Best quality MP3")
+            self.fetched_qualities.clear()
+            self.fetch_btn.set_state("disabled")
+            return
+
         url_count = len(self.url_rows)
         if url_count > 1:
             self.quality_var.set("Highest available")
@@ -436,15 +459,16 @@ class App:
 
         def run():
             total      = len(urls)
+            audio_only = self.audio_only_var.get()
             choice     = self.quality_var.get()
             max_height = None
-            if choice != "Highest available":
+            if not audio_only and choice != "Highest available":
                 try:
                     max_height = int(choice.replace("p", ""))
                 except ValueError:
                     pass
 
-            fmt = self._get_format_string(max_height)
+            fmt = "bestaudio/best" if audio_only else self._get_format_string(max_height)
 
             for idx, (i, row) in enumerate(urls):
                 url = row.get_url()
@@ -464,40 +488,63 @@ class App:
                                 self.progress_bar.set(base + current)
                             self._update_details(d, t, dl)
                         elif d["status"] == "finished":
-                            _row.status_label.config(text="Merging...", fg=C["TEXT_SEC"])
-                            self.details_label.config(text="Merging audio and video...")
+                            if not audio_only:
+                                _row.status_label.config(text="Merging...", fg=C["TEXT_SEC"])
+                                self.details_label.config(text="Merging audio and video...")
+                            else:
+                                _row.status_label.config(text="Converting...", fg=C["TEXT_SEC"])
+                                self.details_label.config(text="Converting to MP3...")
 
-                    ydl_opts = {
-                        "format": fmt,
-                        "merge_output_format": "mp4",
-                        "postprocessors": [{
-                            "key": "FFmpegVideoConvertor",
-                            "preferedformat": "mp4",
-                        }],
-                        "outtmpl": os.path.join(self.download_dir, "%(title)s.%(ext)s"),
-                        "progress_hooks": [progress_hook],
-                        "quiet": True,
-                        "no_warnings": True,
-                    }
+                    if audio_only:
+                        ydl_opts = {
+                            "format": fmt,
+                            "postprocessors": [{
+                                "key": "FFmpegExtractAudio",
+                                "preferredcodec": "mp3",
+                                "preferredquality": "0",
+                            }],
+                            "outtmpl": os.path.join(self.download_dir, "%(title)s.%(ext)s"),
+                            "progress_hooks": [progress_hook],
+                            "quiet": True,
+                            "no_warnings": True,
+                        }
+                    else:
+                        ydl_opts = {
+                            "format": fmt,
+                            "merge_output_format": "mp4",
+                            "postprocessors": [{
+                                "key": "FFmpegVideoConvertor",
+                                "preferedformat": "mp4",
+                            }],
+                            "outtmpl": os.path.join(self.download_dir, "%(title)s.%(ext)s"),
+                            "progress_hooks": [progress_hook],
+                            "quiet": True,
+                            "no_warnings": True,
+                        }
 
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info    = ydl.extract_info(url, download=False)
                         title   = info.get("title", url)
-                        best_h  = 0
-                        best_fps = 0
-                        for f in info.get("formats", []):
-                            h   = f.get("height") or 0
-                            fps = f.get("fps") or 0
-                            if max_height and h > max_height:
-                                continue
-                            if h > best_h or (h == best_h and fps > best_fps):
-                                best_h   = h
-                                best_fps = fps
+                        label   = f"Video {idx+1}: " if total > 1 else ""
 
-                        quality_str = f"{best_h}p{best_fps}"
-                        label = f"Video {idx+1}: " if total > 1 else ""
-                        self.quality_label.config(
-                            text=f"{label}Downloading at {quality_str}")
+                        if audio_only:
+                            quality_str = "Audio (best)"
+                            self.quality_label.config(
+                                text=f"{label}Downloading audio only (best quality)")
+                        else:
+                            best_h  = 0
+                            best_fps = 0
+                            for f in info.get("formats", []):
+                                h   = f.get("height") or 0
+                                fps = f.get("fps") or 0
+                                if max_height and h > max_height:
+                                    continue
+                                if h > best_h or (h == best_h and fps > best_fps):
+                                    best_h   = h
+                                    best_fps = fps
+                            quality_str = f"{best_h}p{best_fps}"
+                            self.quality_label.config(
+                                text=f"{label}Downloading at {quality_str}")
 
                         ydl.download([url])
 
@@ -591,6 +638,7 @@ class App:
             row.destroy()
         self.url_rows[0].entry.delete(0, tk.END)
         self.url_rows[0].status_label.config(text="")
+        self.audio_only_var.set(False)
         self.quality_var.set("Highest available")
         self.fetched_qualities.clear()
         self._build_quality_radios(["Highest available"])
